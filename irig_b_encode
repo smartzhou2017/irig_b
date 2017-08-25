@@ -1,0 +1,352 @@
+module  irig_out(       
+		input	                    clk,
+		input   				    clk_100M,
+        input		[27:0]	        cnt_1pps,   
+		input       			    rst,
+		input		[3:0]	   		second_l_bcd,
+		input		[3:0]	   		second_h_bcd,
+		input		[3:0]	   		minute_l_bcd,
+		input		[3:0]	   		minute_h_bcd,
+		input		[3:0]	   		hour_l_bcd,
+		input		[3:0]	   		hour_h_bcd,
+		input		[3:0]	   		days_l_bcd,
+		input		[3:0]	   		days_m_bcd,
+		input		[3:0]	   		days_h_bcd,
+		input		[3:0]	   		year_l_bcd,
+		input		[3:0]	   		year_h_bcd,
+		output   reg                enable,
+		output   reg                out,
+		output   reg                ms_clk_1 ,
+        output   reg                syn_1pps_1clk,
+        output   reg                irig_1pps
+	  	 );	
+	  	 
+ 	 	wire         				out_reg;
+		wire 	   [99:0] 			initial_value;
+	  	//reg 						ms_clk_1;
+	  	reg		   [99:0]	        out_buf; 
+	 	reg		   [19:0]	        ms_counter;																																				
+	  	reg		   [19:0]	        pwm_counter;																																				
+	    reg		   [6:0]	        cnt_time;																																				
+	    reg			    			out_P;																																				
+	    wire  	   [17:0] 		    second_day;																																											
+        reg	  	   [26:0]	        pulse_cnt;    
+	    reg		                    syn;            
+		reg	  	   [26:0]	        syn_cnt; 
+				
+        reg        [9:0]            ru_cmd_vld_cnt;
+		reg        [27:0]           cnt_clk10M;
+        reg							syn_1pps_din;
+		//reg                       syn_1pps_1clk;
+		wire [17:0]                 mul_song_ip0_result;
+		wire [17:0]                 mul_song_ip1_result;
+		wire [17:0]                 mul_song_ip2_result;
+		wire [17:0]                 mul_song_ip3_result;
+		wire [17:0]                 mul_song_ip4_result;
+        wire [4:0]                  hour_o  ;
+        wire [5:0]                  minute_o; 
+        wire [5:0]                  second_o; 
+        wire [17:0]                 hour_i  ; 
+        wire [17:0]                 minute_i; 
+        wire [5:0]                  second_i; 
+        reg  [10:0]                 finish_reg_shift ;
+        reg  [17:0]                 hour  ; 
+        reg  [17:0]                 minute; 
+        reg  [5:0]                  second;  
+        assign hour_o   = mul_song_ip0_result[4:0]+hour_l_bcd;
+        assign minute_o = mul_song_ip1_result[5:0]+minute_l_bcd;
+        assign second_o = mul_song_ip2_result[5:0]+second_l_bcd;
+		assign hour_i   = mul_song_ip3_result;        //以秒为单位
+        assign minute_i = mul_song_ip4_result;        //以秒为单位
+        assign second_i = second_o; 
+		  
+        always @(posedge clk or posedge rst)  
+			if(rst)	
+				finish_reg_shift <= 11'h0;
+			   
+			else
+			   finish_reg_shift <= { finish_reg_shift[9:0], 1'b1};  //最终的second,minute,hour的值，需等待各个计算值稳定后赋值，finish_reg_shift[10]是赋值控制信号
+				
+				
+		always @(posedge clk or posedge rst)      
+   			if(rst)	                              
+       			second  <=6'h0;                           			                     
+   			else if(finish_reg_shift[10])          
+       			second  <=second_i;               
+	   
+		always @(posedge clk or posedge rst)  
+           if(rst)	begin
+               hour  <=17'h0;
+               minute<=17'h0;
+           end
+           else if(finish_reg_shift[10])  begin
+               hour  <=hour_i  ;
+               minute<=minute_i;
+           end
+			  
+		mul_song  mul_song_ip0(
+			.clk   (clk),
+            .a   (12'd10),
+            .b   ({2'b0,hour_h_bcd}),
+            .p  (mul_song_ip0_result)
+            );  
+        mul_song  mul_song_ip1(       
+	        .clk   (clk),            
+            .a   (12'd10),       
+            .b   ({2'b0,minute_h_bcd}),               
+            .p  (mul_song_ip1_result)                
+            );
+        mul_song  mul_song_ip2(    
+            .clk   (clk),         
+            .a   (12'd10),      
+            .b   ({2'b0,second_h_bcd}),            
+            .p  (mul_song_ip2_result)             
+            );                     
+        mul_song  mul_song_ip3(    
+           .clk   (clk),         
+           .a   (12'd3600),      
+           .b   ({1'b0,hour_o}  ),            
+           .p  (mul_song_ip3_result)             
+           );                     
+        mul_song  mul_song_ip4(    
+           .clk   (clk),         
+           .a   (12'd60),      
+           .b   ({1'b0,minute_o}),            
+           .p  (mul_song_ip4_result)             
+           );                     
+             
+
+//achieve seconds of day
+				
+//	  assign	second_day=(hour_h_bcd*4'd10+hour_l_bcd)*12'd3600+(minute_h_bcd*4'd10+minute_l_bcd)*6'd60+second_h_bcd*4'd10+second_l_bcd;
+      assign    second_day=hour+minute+second;   //当天的秒计数
+
+
+
+//write data into out_buf initial_value
+		assign  initial_value[0]      =  1'b0;
+	    assign  initial_value[4:1]    =  second_l_bcd; 
+		assign  initial_value[5]      =  1'b0; 	
+	    assign  initial_value[9:6]    =  second_h_bcd;
+	    assign  initial_value[13:10]  =  minute_l_bcd;
+		assign  initial_value[14]     =  1'b0;	
+	    assign  initial_value[18:15]  =  minute_h_bcd;
+		assign  initial_value[19]     =  1'b0;	
+	    assign  initial_value[23:20]  =  hour_l_bcd; 
+		assign  initial_value[24]     =  1'b0;	
+	    assign  initial_value[28:25]  =  hour_h_bcd;
+		assign  initial_value[29]     =  1'b0;	
+	    assign  initial_value[33:30]  =  days_l_bcd;  
+		assign  initial_value[34]     =  1'b0;	
+	    assign  initial_value[38:35]  =  days_m_bcd;
+		assign  initial_value[39]     =  1'b0;	
+	    assign  initial_value[43:40]  =  days_h_bcd; 
+		assign  initial_value[49:44]  =  6'b0;	
+	    assign  initial_value[53:50]  =  year_l_bcd;  
+		assign  initial_value[54]     =  1'b0;	
+	    assign  initial_value[58:55]  =  year_h_bcd[3:0];       
+	    assign  initial_value[79:59]  =  21'b0;     
+	    assign  initial_value[88:80]  =  second_day[8:0];
+		assign  initial_value[89]     =  1'b0;
+	    assign  initial_value[97:90]  =  second_day[16:9];
+		assign  initial_value[99:98]  =  2'b0;	
+
+
+//write a code into out_reg per 10ms	
+	
+		always @(posedge clk_100M or posedge rst) begin 
+			if(rst)	
+				out_buf <= 100'd0;			   
+            else if(syn_1pps_din)//////////////////////syn_1pps_1clk///////////////////////by yang	
+			    	out_buf <= initial_value;
+			else if(pwm_counter==20'd999999)                         //10ms移位一次
+					out_buf <= {1'b0, out_buf[99:1]};				
+		end
+		
+  		assign out_reg =  out_buf[0];
+
+//set out_P
+
+		always @(posedge clk_100M  or posedge rst)	begin
+			if(rst)
+				cnt_time<=0;
+			else if(syn_1pps_1clk)
+				cnt_time<=0;
+			else if(cnt_time==7'd99&&pwm_counter==20'd999999)   //10ms *100 = 1s
+				cnt_time<=0;
+			else if(pwm_counter==20'd999999)	
+				cnt_time<=cnt_time+6'b1;		
+		end
+		
+		always @(posedge clk_100M or posedge rst)	begin
+			if(rst)
+				out_P<=1'b0;
+			else if(!syn_1pps_1clk)
+				case(cnt_time)
+				7'd0 :out_P  <=1'b1;
+				7'd9 :out_P  <=1'b1;
+				7'd19:out_P  <=1'b1;
+				7'd29:out_P  <=1'b1;
+				7'd39:out_P  <=1'b1;
+				7'd49:out_P  <=1'b1;
+				7'd59:out_P  <=1'b1;
+				7'd69:out_P  <=1'b1;
+				7'd79:out_P  <=1'b1;
+				7'd89:out_P  <=1'b1;
+				7'd99:out_P  <=1'b1;
+				default:out_P<=0;
+				endcase
+		end
+		
+		
+//generate 2ms,5ms,8ms pluse and output
+		always @(posedge clk_100M or posedge rst)	begin   //10ms pulse
+			if(rst)	
+				pwm_counter<=0;
+			
+			else if(syn_1pps_1clk)	
+					pwm_counter<=0;				
+		    else if(pwm_counter>=20'd999999)	
+					pwm_counter<=0;
+			else
+					pwm_counter<=pwm_counter+20'd1;    	
+		end	
+		
+		always @(posedge clk_100M or posedge rst)	begin
+			if(rst)		
+				out<=1'b0;
+			else  begin				
+					if(!out_P&&out_reg)	begin         //5ms pulse 表示 1
+					   if(pwm_counter>=20'd500000)
+							out<=1'b0;
+				       else
+				            out<=1'b1;
+					end
+					else if(!out_P&&!out_reg)	begin  //2ms pulse 表示 0
+						if(pwm_counter>=20'd200000)
+							out<=1'b0;
+				        else
+				            out<=1'b1;
+					end
+					else if(out_P)	begin
+						if(pwm_counter>=20'd800000)     //8ms pulse 表示位置索引
+							out<=1'b0;
+				        else
+				            out<=1'b1;
+					end				
+			end
+		end	
+
+
+                               						  
+//generate 	irig_1pps 			
+    	always @(posedge clk_100M or posedge rst)	   
+			if(rst)	                 
+				irig_1pps<=0;                        
+			else begin   
+						if(cnt_1pps==0)	       
+							irig_1pps<=0; 
+						else if(cnt_1pps==1)
+							irig_1pps<=1;
+						else if(cnt_1pps==28'd20000000)			
+							irig_1pps<=0;   
+                        else
+                            irig_1pps<=irig_1pps;                                        
+			        end                                         
+		 
+
+
+      
+//generate syn_1pps_1clk  /////////////////////////////////////////////
+		always @(posedge clk_100M or posedge rst)  begin
+			if (rst) 
+				cnt_clk10M<=0;
+		
+			else begin
+				if(irig_1pps)
+				 	cnt_clk10M<=cnt_clk10M+28'd1;
+				else
+					cnt_clk10M<=0;
+			end
+		end
+		
+    	always @(posedge clk_100M or posedge rst)  begin
+			if (rst) 
+				syn_1pps_1clk<=0;
+			else begin
+				if(cnt_clk10M==0)	 
+					syn_1pps_1clk<=0;
+				else if(cnt_clk10M==28'd1)
+					syn_1pps_1clk<=1;	
+				else if(cnt_clk10M==28'd2)
+					syn_1pps_1clk<=0;
+				else
+					syn_1pps_1clk<=syn_1pps_1clk;
+			end
+		end
+		/////////////////////////////////////////////////////////////////////////////////////// add by yang
+		always @(posedge clk_100M or posedge rst)  begin
+			if (rst) 
+				syn_1pps_din<=0;
+			else begin
+				if(cnt_clk10M==0)	 
+					syn_1pps_din<=0;
+				else if(cnt_clk10M==28'd500)
+					syn_1pps_din<=1;	
+				else if(cnt_clk10M==28'd501)
+					syn_1pps_din<=0;
+				else
+					syn_1pps_din<=syn_1pps_din;
+			end
+		end
+		///////////////////////////////////////////////////////////////////////////////////////////
+
+//generate 1s pulse//////////////////////////////////////
+		always @(posedge clk_100M or posedge rst)  begin
+			if (rst) 
+				pulse_cnt<=0;
+		
+			else begin
+				if(syn_1pps_1clk)
+				 	pulse_cnt<= 27'd1;
+				else if( (pulse_cnt>27'd0) && (pulse_cnt <= 27'd100000000))
+					pulse_cnt<= pulse_cnt + 27'd1;	
+				else
+					pulse_cnt<=0;		
+			end
+		end
+		
+		always @(posedge clk_100M or posedge rst)  begin
+			if (rst) 
+				enable<=0;
+			else if((pulse_cnt>27'd0) && (pulse_cnt <= 27'd100000000))	 
+				enable<=1;
+			else
+				enable<=0;
+			
+		end		
+						      
+
+		
+//clk frequency division to ms_clk_1 for test 
+        always @(posedge clk or posedge rst)	begin   
+        	if(rst)	                              
+				ms_counter<=0;
+			else if (ms_counter==19'd49999) 
+					ms_counter<=0;
+				else 
+			        ms_counter<=ms_counter+19'd1;  
+		end
+		
+		always @(posedge clk or posedge rst)	begin   
+			if(rst)	                              
+				ms_clk_1<=0; 
+			else if	(ms_counter==0)
+			    ms_clk_1<=1; 
+			else if(ms_counter==19'd24999)    
+			    ms_clk_1<=0;  
+			else
+			    ms_clk_1<=ms_clk_1; 
+        end
+		
+endmodule
